@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-python3 solve.py
+python3 solve.py $1 $2 $3
