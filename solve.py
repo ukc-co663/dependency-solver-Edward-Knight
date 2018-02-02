@@ -2,6 +2,8 @@
 """Solves dependency issues for a package manager. See
 https://github.com/ukc-co663/depsolver
 """
+# Ubuntu 16.04 python3 is version 3.5.1-3
+# https://packages.ubuntu.com/xenial/python3
 import argparse
 import json
 import re
@@ -17,7 +19,8 @@ class Package(types.SimpleNamespace):
     """
     def __init__(self, package_data):
         self.name = package_data["name"]
-        self.version = package_data["version"]
+        self.version = [int(part) for part in
+                        package_data["version"].split(".")]
         self.size = package_data["size"]
 
         if "depends" in package_data:
@@ -57,16 +60,40 @@ class Package(types.SimpleNamespace):
         Also rationalises the dependency lists to remove any packages that
         conflict.
         """
-        # todo: parse dependencies
-        self.dependencies = {}
+        # parse dependencies
+        self.dependencies = []
+        for constraint_list in self.dependency_constraints:
+            for constraint in constraint_list:
+                depends = []
+                if constraint.name not in repository:
+                    continue
+                for package in repository[constraint.name]:
+                    if constraint.fulfilled_by(package):
+                        depends.append(package)
+                if len(depends) != 0:
+                    self.dependencies.append(depends)
 
-        # todo: parse conflicts
-        self.conflicts = {}
+        # parse conflicts
+        self.conflicts = []
+        for constraint in self.conflict_constraints:
+            conflicts = []
+            if constraint.name not in repository:
+                continue
+            for package in repository[constraint.name]:
+                if constraint.fulfilled_by(package):
+                    conflicts.append(package)
+            if len(conflicts) != 0:
+                self.conflicts.append(conflicts)
 
-        # todo: rationalise dependency list
+        # rationalise dependency list (if a dependency is a conflict, remove it)
+        for conflict_list in self.conflicts:
+            for conflict in conflict_list:
+                for depends_list in self.dependencies:
+                    if conflict in depends_list:
+                        depends_list.remove(conflict)
 
     def __str__(self):
-        return self.name + "=" + self.version
+        return self.name + "=" + ".".join(str(part) for part in self.version)
 
 
 class Constraint(types.SimpleNamespace):
@@ -81,15 +108,38 @@ class Constraint(types.SimpleNamespace):
             raise Exception("Constraint data invalid: "
                             + str(constraint_data))
         group_dict = match.groupdict()
+        assert (group_dict["constraint"] is None) == (group_dict["version"] is None)
 
         self.name = group_dict["name"]
         self.constraint = group_dict["constraint"]
         self.version = group_dict["version"]
+        if self.version is not None:
+            self.version = [int(part) for part in
+                            group_dict["version"].split(".")]
+
+    def fulfilled_by(self, package):
+        if self.name != package.name:
+            return False
+        if self.constraint is None and self.version is None:
+            return True
+        if self.constraint == "=":
+            return package.version == self.version
+        if self.constraint == "<":
+            return package.version < self.version
+        if self.constraint == ">":
+            return package.version > self.version
+        if self.constraint == "<=":
+            return package.version <= self.version
+        if self.constraint == ">=":
+            return package.version >= self.version
+        raise NotImplementedError("Constraint '" + str(self.constraint)
+                                  + "' not recognised.")
 
     def __str__(self):
         result = self.name
         if self.constraint is not None and self.version is not None:
-            result += self.constraint + self.version
+            result += self.constraint + ".".join(str(part) for part in
+                                                     self.version)
         return result
 
     def __repr__(self):
