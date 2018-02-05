@@ -63,37 +63,37 @@ class Package(types.SimpleNamespace):
         # parse dependencies
         self.dependencies = []
         for constraint_list in self.dependency_constraints:
+            depends = []
             for constraint in constraint_list:
-                depends = []
                 if constraint.name not in repository:
                     continue
                 for package in repository[constraint.name]:
                     if constraint.fulfilled_by(package):
                         depends.append(package)
-                if len(depends) != 0:
-                    self.dependencies.append(depends)
+            if len(depends) != 0:
+                self.dependencies.append(depends)
 
         # parse conflicts
         self.conflicts = []
         for constraint in self.conflict_constraints:
-            conflicts = []
             if constraint.name not in repository:
                 continue
             for package in repository[constraint.name]:
                 if constraint.fulfilled_by(package):
-                    conflicts.append(package)
-            if len(conflicts) != 0:
-                self.conflicts.append(conflicts)
+                    self.conflicts.append(package)
 
         # rationalise dependency list (if a dependency is a conflict, remove it)
-        for conflict_list in self.conflicts:
-            for conflict in conflict_list:
-                for depends_list in self.dependencies:
-                    if conflict in depends_list:
-                        depends_list.remove(conflict)
+        for conflict in self.conflicts:
+            for depends_list in self.dependencies:
+                if conflict in depends_list:
+                    depends_list.remove(conflict)
 
     def __str__(self):
         return self.name + "=" + ".".join(str(part) for part in self.version)
+
+    def __repr__(self):
+        # debug
+        return str(self)
 
 
 class Constraint(types.SimpleNamespace):
@@ -164,9 +164,9 @@ def parse(repository_data, initial_data, constraints_data):
     # assuming all installed packages are available in the repository
     initial = []
     for package_version in initial_data:
-        name, version = package_version.split("=")
-        for package in repository[name]:
-            if package.version == version:
+        constraint = Constraint(package_version)
+        for package in repository[constraint.name]:
+            if constraint.fulfilled_by(package):
                 initial.append(package)
                 break
 
@@ -176,30 +176,82 @@ def parse(repository_data, initial_data, constraints_data):
     for constraint_data in constraints_data:
         constraint = Constraint(constraint_data[1:])
         if constraint_data[0] == "-":
-            uninstall.append(constraint)
+            assert constraint.name in repository
+            for package in repository[constraint.name]:
+                if constraint.fulfilled_by(package):
+                    uninstall.append(package)
+                    break
         else:
             install.append(constraint)
 
     return repository, initial, uninstall, install
 
 
+def install_dependencies(repository, initial, uninstall, package):
+    """Create the commands required to install the specified package including
+    requirements. Selects dependencies based on their size.
+
+    todo: include size of dependencies in calculation
+    todo: look ahead to find conflicts instead of failing
+    """
+    commands = []
+    for dependency_list in package.dependencies:
+        smallest = None
+        for possible_dependency in dependency_list:
+            if possible_dependency in uninstall:
+                continue
+            for initial_package in initial:
+                if possible_dependency in initial_package.conflicts:
+                    break
+            else:
+                # package is not conflicting
+                if smallest is None or possible_dependency.size < smallest.size:
+                    smallest = possible_dependency
+        if smallest is None:
+            # need to uninstall another package so this one can be installed
+            raise Exception("Failed to find package!")
+        if smallest not in initial:
+            initial.append(smallest)
+            commands.extend(install_dependencies(repository, initial, uninstall,
+                                                 smallest))
+            commands.append("+" + str(smallest))
+    return commands
+
+
 def solve(repository, initial, uninstall, install):
     # naive implementation:
-    # loosely checks initial state
-    # does not update initial state
-    # does not check version
-    # does not check for dependencies
-    # does not check for conflicts
+    # will fail instead of uninstalling a conflicting package
     commands = []
 
-    for constraint in uninstall:
-        commands.append("-" + str(constraint))
+    for package in uninstall:
+        if package in initial:
+            commands.append("-" + str(package))
+            initial.remove(package)
 
     for constraint in install:
-        package = repository[constraint.name][0]
-        if package in initial:
+        # todo: include size of dependencies in calculation
+        smallest = None
+        for potential_package in repository[constraint.name]:
+            if potential_package in uninstall:
+                continue
+            if not constraint.fulfilled_by(potential_package):
+                continue
+            for initial_package in initial:
+                if potential_package in initial_package.conflicts:
+                    break
+            else:
+                # package is not conflicting
+                if smallest is None or potential_package.size < smallest.size:
+                    smallest = potential_package
+        if smallest is None:
+            # need to uninstall another package so this one can be installed
+            raise Exception("Failed to find package!")
+        if smallest in initial:
             continue
-        commands.append("+" + str(package))
+        initial.append(smallest)
+        commands.extend(install_dependencies(repository, initial, uninstall,
+                                             smallest))
+        commands.append("+" + str(smallest))
 
     return commands
 
@@ -224,4 +276,5 @@ def main():
 
 
 if __name__ == "__main__":
+    sys.setrecursionlimit(100000)  # lol
     main()
