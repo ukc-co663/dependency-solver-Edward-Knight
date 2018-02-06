@@ -228,6 +228,10 @@ def solve(repository, initial, uninstall, install):
             commands.append("-" + str(package))
             initial.remove(package)
 
+    for package in initial:
+        commands.append("-" + str(package))
+    initial = []
+
     for constraint in install:
         # todo: include size of dependencies in calculation
         smallest = None
