@@ -5,10 +5,14 @@ https://github.com/ukc-co663/depsolver
 # Ubuntu 16.04 python3 is version 3.5.1-3
 # https://packages.ubuntu.com/xenial/python3
 import argparse
+import bisect
 import json
+import pycosat
 import re
 import sys
 import types
+
+SAT_NUMBER = [None]
 
 
 class Package(types.SimpleNamespace):
@@ -38,6 +42,11 @@ class Package(types.SimpleNamespace):
         else:
             self.conflict_constraints = []
         self.conflicts = None
+
+        # register self as a number to be used in SAT solver
+        global SAT_NUMBER
+        SAT_NUMBER.append(self)
+        self.sat_number = len(SAT_NUMBER) - 1
 
     def parse_dependency_constraints(self, dependency_data):
         """Parses a list of dependency data into a list of Constraint objects.
@@ -218,7 +227,7 @@ def install_dependencies(repository, initial, uninstall, package):
     return commands
 
 
-def solve(repository, initial, uninstall, install):
+def old_solve(repository, initial, uninstall, install):
     # naive implementation:
     # will fail instead of uninstalling a conflicting package
     commands = []
@@ -256,6 +265,120 @@ def solve(repository, initial, uninstall, install):
     return commands
 
 
+def toposort(nodes, count):
+    output = []
+    to_remove = []
+    # initialise list of nodes with no incoming edges
+    for node in nodes.keys():
+        if count[node] == 0:
+            to_remove.append(node)
+
+    # create output list
+    for _ in range(len(nodes)):
+        if len(to_remove) == 0:
+            raise Exception("Unable to toposort solution")
+        node = to_remove.pop(0)
+        output.append(node)
+        for outgoing_node in nodes[node]:
+            count[outgoing_node] -= 1
+            if count[outgoing_node] == 0 and outgoing_node not in to_remove:
+                bisect.insort(to_remove, outgoing_node)
+
+    return output
+
+
+def solve(repository, initial, uninstall, install):
+    """Convert the problem to a SAT problem in CNF and run PicoSAT over it."""
+    clauses = []
+    # encode conflicts and dependencies of repository
+    for package_versions in repository.values():
+        for package in package_versions:
+            # A conflicts B -> !A OR !B
+            for conflict in package.conflicts:
+                clauses.append([-package.sat_number, -conflict.sat_number])
+
+            for dependency_list in package.dependencies:
+                # A requires B or C -> !A OR B OR C
+                sub_clause = [-package.sat_number]
+                for possible_dependency in dependency_list:
+                    sub_clause.append(possible_dependency.sat_number)
+                clauses.append(sub_clause)
+
+    # encode uninstall constraints
+    for package in uninstall:
+        clauses.append([-package.sat_number])
+
+    # encode install constraints
+    for constraint in install:
+        sub_clause = []
+        for package in repository[constraint.name]:
+            if constraint.fulfilled_by(package):
+                sub_clause.append(package.sat_number)
+        clauses.append(sub_clause)
+
+    # todo: allow uninstalling from initial state
+    for package in initial:
+        clauses.append([package.sat_number])
+
+    # solve!
+    result = pycosat.solve(clauses, vars=len(SAT_NUMBER) - 1)
+    if isinstance(result, str):
+        raise Exception(result)
+
+    # convert SAT solution into lists of packages to install and uninstall
+    to_install = []
+    to_uninstall = []
+    for sat_number in result:
+        package = SAT_NUMBER[abs(sat_number)]
+        if sat_number > 0:
+            to_install.append(package)
+        else:
+            # uninstall
+            to_uninstall.append(package)
+
+    # rationalise to_install, taking initial state into account
+    to_install = [p for p in to_install if p not in initial]
+    # ("to_install:", *[p.sat_number for p in to_install])  # debug
+
+    # ignore to_uninstall because we're not allowing uninstalls from initial state
+
+    # sort the commands in the correct install order
+    # build graph structure for toposort
+    nodes = {p.sat_number: [] for p in to_install}
+    count = {p.sat_number: 0 for p in to_install}
+    for package in to_install:
+        # add outgoing edges based on dependencies
+        for dependency_list in package.dependencies:
+            fulfilled = False
+            for dependency in dependency_list:
+                if dependency in initial:
+                    # dependency fulfilled by initial
+                    fulfilled = True
+                    break
+            if not fulfilled:
+                # dependency not fulfilled by initial
+                for dependency in dependency_list:
+                    if dependency in to_install:
+                        # dependency fulfilled by new install
+                        # add edge to graph
+                        nodes[dependency.sat_number].append(package.sat_number)
+                        count[package.sat_number] += 1
+                        fulfilled = True
+                        break
+            if not fulfilled:
+                raise Exception("Unable to satisfy dependency for " + str(package))
+
+    # toposort!
+    # print("nodes:", nodes)  # debug
+    to_install_sat_numbers = toposort(nodes, count)
+    # print("to_install:", *to_install_sat_numbers)  # debug
+
+    # convert to commands
+    commands = ["+" + str(SAT_NUMBER[n]) for n in to_install_sat_numbers]
+
+    return commands
+
+
 def main():
     def json_from_file(file_path):
         """Helper method to read and parse a JSON file."""
@@ -276,5 +399,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.setrecursionlimit(100000)  # lol
+    # sys.setrecursionlimit(100000)  # lol
     main()
