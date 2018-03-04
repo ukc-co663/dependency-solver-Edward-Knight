@@ -336,8 +336,8 @@ def problem_to_cnf(repository, uninstall, install):
 
     # add problem line
     output.insert(1, "p cnf {} {} \n".format(
-        len(SAT_NUMBER) - 1,  # number of variables
-        len(output) - 1))  # number of clauses
+        len(SAT_NUMBER) - 1,  # number of variables (subtract None value)
+        len(output) - 1))  # number of clauses (subtract comment line)
 
     return output
 
@@ -375,8 +375,8 @@ def problem_to_wcnf(repository, initial, uninstall, install):
 
     # convert problem line
     output[1] = "p wcnf {} {} {}\n".format(
-        len(SAT_NUMBER) - 1,  # number of variables
-        len(output) - 1,  # number of clauses
+        len(SAT_NUMBER) - 1,  # number of variables (subtract None value)
+        len(output) - 2,  # number of clauses (subtract 'c' and 'p' lines)
         MAX_WEIGHT)
 
     return output
@@ -429,12 +429,7 @@ def remove_p_to_commands(remove_p, initial):
                     count[package.sat_number] += 1
 
     # toposort!
-    try:
-        remove_sat_numbers = list(reversed(toposort(nodes, count)))
-    except ToposortError:
-        print("Failed to toposort uninstall list, ignoring...", file=sys.stderr)
-        # ignore toposort error
-        remove_sat_numbers = [p.sat_number for p in remove_p]
+    remove_sat_numbers = list(reversed(toposort(nodes, count)))
 
     # convert to commands
     commands = ["-" + str(SAT_NUMBER[n]) for n in remove_sat_numbers]
@@ -482,7 +477,10 @@ def add_p_to_commands(add_p, initial):
     # convert to commands
     commands = ["+" + str(SAT_NUMBER[n]) for n in add_sat_numbers]
 
-    return commands
+    # update initial state
+    initial = initial[:] + [p for p in add_p]
+
+    return commands, initial
 
 
 def solve_cnf(repository, initial, uninstall, install):
@@ -498,13 +496,14 @@ def solve_cnf(repository, initial, uninstall, install):
 
         # convert add_p to commands
         try:
-            add_commands = add_p_to_commands(add_p, new_initial)
+            add_commands, new_initial = add_p_to_commands(add_p, new_initial)
             break
         except ToposortError:
             print("ToposortError, trying again...", file=sys.stderr)
             # dependency cycle, try again
             # disallow this solution by inverting it and adding it as a clause
-            cnf.append(" ".join(str(-p.sat_number) for p in add_p) + " 0")
+            cnf.append(" ".join(str(-p.sat_number) for p in add_p) + " 0\n")
+            # todo: update problem line with extra clause
 
     return remove_commands + add_commands
 
@@ -522,14 +521,15 @@ def solve_wcnf(repository, initial, uninstall, install):
 
         # convert add_p to commands
         try:
-            add_commands = add_p_to_commands(add_p, new_initial)
+            add_commands, new_initial = add_p_to_commands(add_p, new_initial)
             break
         except ToposortError:
             print("ToposortError, trying again...", file=sys.stderr)
             # dependency cycle, try again
             # disallow this solution by inverting it and adding it as a clause
             wcnf.append(MAX_WEIGHT_STR
-                        + " ".join(str(-p.sat_number) for p in add_p) + " 0")
+                        + " ".join(str(-p.sat_number) for p in add_p) + " 0\n")
+            # todo: update problem line with extra clause
 
     return remove_commands + add_commands
 
@@ -547,13 +547,11 @@ def main():
     args = parser.parse_args()
 
     repository, initial, uninstall, install = parse(**args.__dict__)
-    try:
-        if len(SAT_NUMBER) < 50000:  # arbitrary choice
-            commands = solve_wcnf(repository, initial, uninstall, install)
-        else:
-            commands = solve_cnf(repository, initial, uninstall, install)
-    except SATError:
-        raise  # fail
+    if len(SAT_NUMBER) < 50000:  # arbitrary choice
+        commands = solve_wcnf(repository, initial, uninstall, install)
+    else:
+        # note: this path doesn't seem to provide a much better alternative
+        commands = solve_cnf(repository, initial, uninstall, install)
 
     json.dump(commands, sys.stdout)
     sys.stdout.flush()
