@@ -359,12 +359,14 @@ def run_solver(wcnf):
     try:
         output = subprocess.check_output(
             ["open-wbo/open-wbo_static", "Edward-Knight.wcnf"],
-            stderr=subprocess.PIPE).splitlines()
+            stderr=subprocess.PIPE).decode("utf-8").splitlines()
     except subprocess.CalledProcessError as e:
-        output = e.output.splitlines()
+        output = e.output.decode("utf-8").splitlines()
 
     # get output
-    sat_numbers = [int(n) for n in str(output[-1])[4:].split(" ")[:-1]]
+    if str(output[-1][0]) != "v":
+        raise Exception("\n" + "\n".join(output))
+    sat_numbers = [int(n) for n in output[-1][2:].split(" ")[:-1]]
     add_p = []
     remove_p = []
     for sat_number in sat_numbers:
