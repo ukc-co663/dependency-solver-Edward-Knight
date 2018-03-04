@@ -482,12 +482,21 @@ def add_p_to_commands(add_p, initial):
 
 
 def solve(repository, initial, uninstall, install):
-    # convert to WCNF
-    wcnf = problem_to_wcnf(repository, initial, uninstall, install)
+    if len(SAT_NUMBER) > 10000:  # arbitrary choice
+        weighted = False
+    else:
+        weighted = True
+
+    if weighted:
+        # convert to WCNF
+        cnf = problem_to_wcnf(repository, initial, uninstall, install)
+    else:
+        # convert to CNF
+        cnf = problem_to_cnf(repository, uninstall, install)
 
     while True:
         # run solver
-        remove_p, add_p = run_solver(wcnf)
+        remove_p, add_p = run_solver(cnf)
 
         # convert remove_p to commands
         remove_commands, new_initial = remove_p_to_commands(remove_p, initial)
@@ -497,10 +506,12 @@ def solve(repository, initial, uninstall, install):
             add_commands = add_p_to_commands(add_p, new_initial)
             break
         except ToposortError:
+            print("ToposortError, trying again...", file=sys.stderr)
             # dependency cycle, try again
             # disallow this solution by inverting it and adding it as a clause
-            wcnf.append(MAX_WEIGHT_STR
-                        + " ".join(str(-p.sat_number) for p in add_p) + " 0")
+            cnf.append(" ".join(str(-p.sat_number) for p in add_p) + " 0")
+            if weighted:
+                cnf[-1] = MAX_WEIGHT_STR + cnf[-1]
 
     return remove_commands + add_commands
 
@@ -525,5 +536,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.setrecursionlimit(100000)  # lol
+    # sys.setrecursionlimit(100000)  # lol
     main()
