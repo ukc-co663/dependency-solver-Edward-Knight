@@ -19,6 +19,10 @@ MAX_WEIGHT = UNINSTALL_COST ** 2
 MAX_WEIGHT_STR = str(MAX_WEIGHT) + " "
 
 
+class ToposortError(Exception):
+    """Unable to toposort the solution."""
+
+
 class Package(types.SimpleNamespace):
     """Container class representing a package.
 
@@ -280,7 +284,7 @@ def toposort(nodes, count):
     # create output list
     for _ in range(len(nodes)):
         if len(to_remove) == 0:
-            raise Exception("Unable to toposort solution")
+            raise ToposortError
         node = to_remove.pop(0)
         output.append(node)
         for outgoing_node in nodes[node]:
@@ -346,50 +350,56 @@ def problem_to_wcnf(repository, initial, uninstall, install):
     return output
 
 
-def solve(repository, initial, uninstall, install):
-    # convert to WCNF
-    wcnf = problem_to_wcnf(repository, initial, uninstall, install)
-
+def run_solver(wcnf):
     # write to file
     with open("Edward-Knight.wcnf", "w") as f:
         f.writelines(wcnf)
 
     # run open-wbo
     try:
-        output = subprocess.check_output(["open-wbo/open-wbo_static", "Edward-Knight.wcnf"], stderr=subprocess.PIPE).splitlines()
+        output = subprocess.check_output(
+            ["open-wbo/open-wbo_static", "Edward-Knight.wcnf"],
+            stderr=subprocess.PIPE).splitlines()
     except subprocess.CalledProcessError as e:
         output = e.output.splitlines()
 
     # get output
     sat_numbers = [int(n) for n in str(output[-1])[4:].split(" ")[:-1]]
-    to_install = []
-    to_uninstall = []
+    add_p = []
+    remove_p = []
     for sat_number in sat_numbers:
         package = SAT_NUMBER[abs(sat_number)]
         if sat_number > 0:
-            to_install.append(package)
+            add_p.append(package)
         else:
             # uninstall
-            to_uninstall.append(package)
+            remove_p.append(package)
 
-    # rationalise to_install, taking initial state into account
-    to_install = [p for p in to_install if p not in initial]
-    # ("to_install:", *[p.sat_number for p in to_install])  # debug
+    return remove_p, add_p
 
-    # rationalise to_uninstall, taking initial state into account
-    to_uninstall = [p for p in to_uninstall if p in initial]
+
+def remove_p_to_commands(remove_p, initial):
+    # rationalise remove_p, taking initial state into account
+    remove_p = [p for p in remove_p if p in initial]
 
     # todo: sort uninstall commands
-    commands = ["-" + str(p) for p in to_uninstall]
+    commands = ["-" + str(p) for p in remove_p]
 
     # update initial state
-    initial = [p for p in initial if p not in to_uninstall]
+    initial = [p for p in initial if p not in remove_p]
+
+    return commands, initial
+
+
+def add_p_to_commands(add_p, initial):
+    # rationalise add_p, taking initial state into account
+    add_p = [p for p in add_p if p not in initial]
 
     # sort the commands in the correct install order
     # build graph structure for toposort
-    nodes = {p.sat_number: [] for p in to_install}
-    count = {p.sat_number: 0 for p in to_install}
-    for package in to_install:
+    nodes = {p.sat_number: [] for p in add_p}
+    count = {p.sat_number: 0 for p in add_p}
+    for package in add_p:
         # add outgoing edges based on dependencies
         for dependency_list in package.dependencies:
             fulfilled = False
@@ -401,7 +411,7 @@ def solve(repository, initial, uninstall, install):
             if not fulfilled:
                 # dependency not fulfilled by initial
                 for dependency in dependency_list:
-                    if dependency in to_install:
+                    if dependency in add_p:
                         # dependency fulfilled by new install
                         # add edge to graph
                         nodes[dependency.sat_number].append(package.sat_number)
@@ -409,17 +419,32 @@ def solve(repository, initial, uninstall, install):
                         fulfilled = True
                         break
             if not fulfilled:
-                raise Exception("Unable to satisfy dependency for " + str(package))
+                raise Exception(
+                    "Unable to satisfy dependency for " + str(package))
 
     # toposort!
-    # print("nodes:", nodes)  # debug
     to_install_sat_numbers = toposort(nodes, count)
-    # print("to_install:", *to_install_sat_numbers)  # debug
 
     # convert to commands
-    commands += ["+" + str(SAT_NUMBER[n]) for n in to_install_sat_numbers]
+    commands = ["+" + str(SAT_NUMBER[n]) for n in to_install_sat_numbers]
 
     return commands
+
+
+def solve(repository, initial, uninstall, install):
+    # convert to WCNF
+    wcnf = problem_to_wcnf(repository, initial, uninstall, install)
+
+    # run solver
+    remove_p, add_p = run_solver(wcnf)
+
+    # convert remove_p to commands
+    remove_commands, initial = remove_p_to_commands(remove_p, initial)
+
+    # convert add_p to commands
+    add_commands = add_p_to_commands(add_p, initial)
+
+    return remove_commands + add_commands
 
 
 def main():
