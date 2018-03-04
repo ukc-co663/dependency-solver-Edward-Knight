@@ -13,6 +13,11 @@ import sys
 import types
 
 SAT_NUMBER = [None]
+"""A list of every package, where the list index is the package's SAT number.
+
+Index 0 is None.
+"""
+
 UNINSTALL_COST = 10**6
 UNINSTALL_COST_STR = str(UNINSTALL_COST) + " "
 MAX_WEIGHT = UNINSTALL_COST ** 2
@@ -384,8 +389,28 @@ def remove_p_to_commands(remove_p, initial):
     # rationalise remove_p, taking initial state into account
     remove_p = [p for p in remove_p if p in initial]
 
-    # todo: sort uninstall commands
-    commands = ["-" + str(p) for p in remove_p]
+    # sort the commands in the correct uninstall order
+    # build graph structure for toposort
+    nodes = {p.sat_number: [] for p in remove_p}
+    count = {p.sat_number: 0 for p in remove_p}
+    for package in remove_p:
+        # add outgoing edges based on dependencies
+        for dependency_list in package.dependencies:
+            for dependency in dependency_list:
+                if dependency in remove_p:
+                    nodes[dependency.sat_number].append(package.sat_number)
+                    count[package.sat_number] += 1
+
+    # toposort!
+    try:
+        remove_sat_numbers = list(reversed(toposort(nodes, count)))
+    except ToposortError:
+        print("Failed to toposort uninstall list, ignoring...", file=sys.stderr)
+        # ignore toposort error
+        remove_sat_numbers = [p.sat_number for p in remove_p]
+
+    # convert to commands
+    commands = ["-" + str(SAT_NUMBER[n]) for n in remove_sat_numbers]
 
     # update initial state
     initial = [p for p in initial if p not in remove_p]
@@ -425,10 +450,10 @@ def add_p_to_commands(add_p, initial):
                     "Unable to satisfy dependency for " + str(package))
 
     # toposort!
-    to_install_sat_numbers = toposort(nodes, count)
+    add_sat_numbers = toposort(nodes, count)
 
     # convert to commands
-    commands = ["+" + str(SAT_NUMBER[n]) for n in to_install_sat_numbers]
+    commands = ["+" + str(SAT_NUMBER[n]) for n in add_sat_numbers]
 
     return commands
 
