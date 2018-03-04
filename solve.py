@@ -435,14 +435,22 @@ def solve(repository, initial, uninstall, install):
     # convert to WCNF
     wcnf = problem_to_wcnf(repository, initial, uninstall, install)
 
-    # run solver
-    remove_p, add_p = run_solver(wcnf)
+    while True:
+        # run solver
+        remove_p, add_p = run_solver(wcnf)
 
-    # convert remove_p to commands
-    remove_commands, initial = remove_p_to_commands(remove_p, initial)
+        # convert remove_p to commands
+        remove_commands, new_initial = remove_p_to_commands(remove_p, initial)
 
-    # convert add_p to commands
-    add_commands = add_p_to_commands(add_p, initial)
+        # convert add_p to commands
+        try:
+            add_commands = add_p_to_commands(add_p, new_initial)
+            break
+        except ToposortError:
+            # dependency cycle, try again
+            # disallow this solution by inverting it and adding it as a clause
+            wcnf.append(MAX_WEIGHT_STR
+                        + " ".join(str(-p.sat_number) for p in add_p) + " 0")
 
     return remove_commands + add_commands
 
