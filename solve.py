@@ -300,36 +300,27 @@ def toposort(nodes, count):
     return output
 
 
-def problem_to_wcnf(repository, initial, uninstall, install):
-    """Converts the problem to DIMACS CNF form, for passing to a SAT solver.
-
-    More specifically, in Weighted Partial Max-SAT form.
-    """
-    output = ["c Weighted Partial Max-SAT form\n"]
+def problem_to_cnf(repository, uninstall, install):
+    """Converts the problem to DIMACS CNF form, for passing to a SAT solver."""
+    output = ["c Normal SAT form\n"]
     # encode conflicts and dependencies of repository
     for package_versions in repository.values():
         for package in package_versions:
-            # since this is a MAX-SAT, the package size is awarded for not
-            # installing the package
-            output.append(str(package.size) + " " + str(-package.sat_number)
-                          + " 0\n")
-
             # A conflicts B -> !A OR !B
             for conflict in package.conflicts:
-                output.append(MAX_WEIGHT_STR + str(-package.sat_number)
-                              + " " + str(-conflict.sat_number) + " 0\n")
+                output.append(str(-package.sat_number) + " "
+                              + str(-conflict.sat_number) + " 0\n")
 
             for dependency_list in package.dependencies:
                 # A requires B or C -> !A OR B OR C
                 sub_clause = [-package.sat_number]
                 for possible_dependency in dependency_list:
                     sub_clause.append(possible_dependency.sat_number)
-                output.append(MAX_WEIGHT_STR
-                              + " ".join(str(s) for s in sub_clause) + " 0\n")
+                output.append(" ".join(str(s) for s in sub_clause) + " 0\n")
 
     # encode uninstall constraints
     for package in uninstall:
-        output.append(MAX_WEIGHT_STR + str(-package.sat_number) + " 0\n")
+        output.append(str(-package.sat_number) + " 0\n")
 
     # encode install constraints
     for constraint in install:
@@ -337,8 +328,40 @@ def problem_to_wcnf(repository, initial, uninstall, install):
         for package in repository[constraint.name]:
             if constraint.fulfilled_by(package):
                 sub_clause.append(package.sat_number)
-        output.append(MAX_WEIGHT_STR + " ".join(str(s) for s in sub_clause)
-                      + " 0\n")
+        output.append(" ".join(str(s) for s in sub_clause) + " 0\n")
+
+    # add problem line
+    output.insert(1, "p cnf {} {} \n".format(
+        len(SAT_NUMBER) - 1,  # number of variables
+        len(output) - 1))  # number of clauses
+
+    return output
+
+
+def problem_to_wcnf(repository, initial, uninstall, install):
+    """Converts the problem to DIMACS CNF form, for passing to a SAT solver.
+
+    More specifically, in Weighted Partial Max-SAT form.
+    """
+    output = problem_to_cnf(repository, uninstall, install)
+
+    # convert cnf to wcnf
+    for i, clause in enumerate(output):
+        if i == 0:
+            output[i] = "c Weighted Partial Max-SAT form\n"
+        elif i == 1:
+            # convert problem line later
+            pass
+        else:
+            output[i] = MAX_WEIGHT_STR + output[i]
+
+    # encode cost to install package
+    for package_versions in repository.values():
+        for package in package_versions:
+            # since this is a MAX-SAT, the package size is awarded for not
+            # installing the package
+            output.append(str(package.size) + " " + str(-package.sat_number)
+                          + " 0\n")
 
     # encode initial state
     for package in initial:
@@ -346,24 +369,24 @@ def problem_to_wcnf(repository, initial, uninstall, install):
         # these packages installed
         output.append(UNINSTALL_COST_STR + str(package.sat_number) + " 0\n")
 
-    # add problem line
-    output.insert(1, "p wcnf {} {} {}\n".format(
+    # convert problem line
+    output[1] = "p wcnf {} {} {}\n".format(
         len(SAT_NUMBER) - 1,  # number of variables
         len(output) - 1,  # number of clauses
-        MAX_WEIGHT))
+        MAX_WEIGHT)
 
     return output
 
 
-def run_solver(wcnf):
+def run_solver(cnf):
     # write to file
-    with open("Edward-Knight.wcnf", "w") as f:
-        f.writelines(wcnf)
+    with open("Edward-Knight.cnf", "w") as f:
+        f.writelines(cnf)
 
     # run open-wbo
     try:
         output = subprocess.check_output(
-            ["open-wbo/open-wbo_static", "Edward-Knight.wcnf"],
+            ["open-wbo/open-wbo_static", "Edward-Knight.cnf"],
             stderr=subprocess.PIPE).decode("utf-8").splitlines()
     except subprocess.CalledProcessError as e:
         output = e.output.decode("utf-8").splitlines()
