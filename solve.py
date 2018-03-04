@@ -7,12 +7,16 @@ https://github.com/ukc-co663/depsolver
 import argparse
 import bisect
 import json
-import pycosat
 import re
+import subprocess
 import sys
 import types
 
 SAT_NUMBER = [None]
+UNINSTALL_COST = 10**6
+UNINSTALL_COST_STR = str(UNINSTALL_COST) + " "
+MAX_WEIGHT = UNINSTALL_COST ** 2
+MAX_WEIGHT_STR = str(MAX_WEIGHT) + " "
 
 
 class Package(types.SimpleNamespace):
@@ -287,26 +291,36 @@ def toposort(nodes, count):
     return output
 
 
-def solve(repository, initial, uninstall, install):
-    """Convert the problem to a SAT problem in CNF and run PicoSAT over it."""
-    clauses = []
+def problem_to_wcnf(repository, initial, uninstall, install):
+    """Converts the problem to DIMACS CNF form, for passing to a SAT solver.
+
+    More specifically, in Weighted Partial Max-SAT form.
+    """
+    output = ["c Weighted Partial Max-SAT form\n"]
     # encode conflicts and dependencies of repository
     for package_versions in repository.values():
         for package in package_versions:
+            # since this is a MAX-SAT, the package size is awarded for not
+            # installing the package
+            output.append(str(package.size) + " " + str(-package.sat_number)
+                          + " 0\n")
+
             # A conflicts B -> !A OR !B
             for conflict in package.conflicts:
-                clauses.append([-package.sat_number, -conflict.sat_number])
+                output.append(MAX_WEIGHT_STR + str(-package.sat_number)
+                              + " " + str(-conflict.sat_number) + " 0\n")
 
             for dependency_list in package.dependencies:
                 # A requires B or C -> !A OR B OR C
                 sub_clause = [-package.sat_number]
                 for possible_dependency in dependency_list:
                     sub_clause.append(possible_dependency.sat_number)
-                clauses.append(sub_clause)
+                output.append(MAX_WEIGHT_STR
+                              + " ".join(str(s) for s in sub_clause) + " 0\n")
 
     # encode uninstall constraints
     for package in uninstall:
-        clauses.append([-package.sat_number])
+        output.append(MAX_WEIGHT_STR + str(-package.sat_number) + " 0\n")
 
     # encode install constraints
     for constraint in install:
@@ -314,21 +328,43 @@ def solve(repository, initial, uninstall, install):
         for package in repository[constraint.name]:
             if constraint.fulfilled_by(package):
                 sub_clause.append(package.sat_number)
-        clauses.append(sub_clause)
+        output.append(MAX_WEIGHT_STR + " ".join(str(s) for s in sub_clause)
+                      + " 0\n")
 
-    # todo: allow uninstalling from initial state
+    # encode initial state
     for package in initial:
-        clauses.append([package.sat_number])
+        # since this is a MAX-SAT, the uninstall cost is awarded for keeping
+        # these packages installed
+        output.append(UNINSTALL_COST_STR + str(package.sat_number) + " 0\n")
 
-    # solve!
-    result = pycosat.solve(clauses, vars=len(SAT_NUMBER) - 1)
-    if isinstance(result, str):
-        raise Exception(result)
+    # add problem line
+    output.insert(1, "p wcnf {} {} {}\n".format(
+        len(SAT_NUMBER) - 1,  # number of variables
+        len(output) - 1,  # number of clauses
+        MAX_WEIGHT))
 
-    # convert SAT solution into lists of packages to install and uninstall
+    return output
+
+
+def solve(repository, initial, uninstall, install):
+    # convert to WCNF
+    wcnf = problem_to_wcnf(repository, initial, uninstall, install)
+
+    # write to file
+    with open("Edward-Knight.wcnf", "w") as f:
+        f.writelines(wcnf)
+
+    # run open-wbo
+    try:
+        output = subprocess.check_output(["open-wbo/open-wbo_static", "Edward-Knight.wcnf"], stderr=subprocess.PIPE).splitlines()
+    except subprocess.CalledProcessError as e:
+        output = e.output.splitlines()
+
+    # get output
+    sat_numbers = [int(n) for n in str(output[-1])[4:].split(" ")[:-1]]
     to_install = []
     to_uninstall = []
-    for sat_number in result:
+    for sat_number in sat_numbers:
         package = SAT_NUMBER[abs(sat_number)]
         if sat_number > 0:
             to_install.append(package)
@@ -340,7 +376,14 @@ def solve(repository, initial, uninstall, install):
     to_install = [p for p in to_install if p not in initial]
     # ("to_install:", *[p.sat_number for p in to_install])  # debug
 
-    # ignore to_uninstall because we're not allowing uninstalls from initial state
+    # rationalise to_uninstall, taking initial state into account
+    to_uninstall = [p for p in to_uninstall if p in initial]
+
+    # todo: sort uninstall commands
+    commands = ["-" + str(p) for p in to_uninstall]
+
+    # update initial state
+    initial = [p for p in initial if p not in to_uninstall]
 
     # sort the commands in the correct install order
     # build graph structure for toposort
@@ -374,7 +417,7 @@ def solve(repository, initial, uninstall, install):
     # print("to_install:", *to_install_sat_numbers)  # debug
 
     # convert to commands
-    commands = ["+" + str(SAT_NUMBER[n]) for n in to_install_sat_numbers]
+    commands += ["+" + str(SAT_NUMBER[n]) for n in to_install_sat_numbers]
 
     return commands
 
@@ -399,5 +442,5 @@ def main():
 
 
 if __name__ == "__main__":
-    # sys.setrecursionlimit(100000)  # lol
+    sys.setrecursionlimit(100000)  # lol
     main()
