@@ -28,6 +28,10 @@ class ToposortError(Exception):
     """Unable to toposort the solution."""
 
 
+class SATError(Exception):
+    """SAT solver failed."""
+
+
 class Package(types.SimpleNamespace):
     """Container class representing a package.
 
@@ -393,7 +397,7 @@ def run_solver(cnf):
 
     # get output
     if str(output[-1][0]) != "v":
-        raise Exception("\n" + "\n".join(output))
+        raise SATError("\n" + "\n".join(output))
     sat_numbers = [int(n) for n in output[-1][2:].split(" ")[:-1]]
     add_p = []
     remove_p = []
@@ -481,18 +485,9 @@ def add_p_to_commands(add_p, initial):
     return commands
 
 
-def solve(repository, initial, uninstall, install):
-    if len(SAT_NUMBER) > 10000:  # arbitrary choice
-        weighted = False
-    else:
-        weighted = True
-
-    if weighted:
-        # convert to WCNF
-        cnf = problem_to_wcnf(repository, initial, uninstall, install)
-    else:
-        # convert to CNF
-        cnf = problem_to_cnf(repository, uninstall, install)
+def solve_cnf(repository, initial, uninstall, install):
+    """Solve the problem with a normal SAT solver."""
+    cnf = problem_to_cnf(repository, uninstall, install)
 
     while True:
         # run solver
@@ -510,8 +505,31 @@ def solve(repository, initial, uninstall, install):
             # dependency cycle, try again
             # disallow this solution by inverting it and adding it as a clause
             cnf.append(" ".join(str(-p.sat_number) for p in add_p) + " 0")
-            if weighted:
-                cnf[-1] = MAX_WEIGHT_STR + cnf[-1]
+
+    return remove_commands + add_commands
+
+
+def solve_wcnf(repository, initial, uninstall, install):
+    """Solve the problem with a weighted partial Max-SAT solver."""
+    wcnf = problem_to_wcnf(repository, initial, uninstall, install)
+
+    while True:
+        # run solver
+        remove_p, add_p = run_solver(wcnf)
+
+        # convert remove_p to commands
+        remove_commands, new_initial = remove_p_to_commands(remove_p, initial)
+
+        # convert add_p to commands
+        try:
+            add_commands = add_p_to_commands(add_p, new_initial)
+            break
+        except ToposortError:
+            print("ToposortError, trying again...", file=sys.stderr)
+            # dependency cycle, try again
+            # disallow this solution by inverting it and adding it as a clause
+            wcnf.append(MAX_WEIGHT_STR
+                        + " ".join(str(-p.sat_number) for p in add_p) + " 0")
 
     return remove_commands + add_commands
 
@@ -529,12 +547,18 @@ def main():
     args = parser.parse_args()
 
     repository, initial, uninstall, install = parse(**args.__dict__)
-    commands = solve(repository, initial, uninstall, install)
+    try:
+        if len(SAT_NUMBER) < 50000:  # arbitrary choice
+            commands = solve_wcnf(repository, initial, uninstall, install)
+        else:
+            commands = solve_cnf(repository, initial, uninstall, install)
+    except SATError:
+        raise  # fail
 
     json.dump(commands, sys.stdout)
     sys.stdout.flush()
 
 
 if __name__ == "__main__":
-    # sys.setrecursionlimit(100000)  # lol
+    sys.setrecursionlimit(100000)  # lol
     main()
